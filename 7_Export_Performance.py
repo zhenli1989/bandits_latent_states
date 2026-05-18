@@ -1,5 +1,5 @@
 from src.export_table import export_summary_table, export_terminal_regret_tables
-from src.plot_performance import plot_best_regret_curves, plot_best_regret_by_c_per_strategy
+from src.plot_performance import plot_optimal_regret_curve_by_strategy, plot_best_regret_curves, plot_best_regret_by_c_per_strategy
 
 ####################################################################################
 ####################################################################################
@@ -41,6 +41,19 @@ df_summary = export_summary_table(
     with_union_bound=with_union_bound,
     use_parallel=True if n_jobs > 1 else False,
     n_jobs=n_jobs,
+)
+
+fig, ax, df_selected = plot_optimal_regret_curve_by_strategy(
+    number_rounds=number_rounds,
+    list_batch=list_batch,
+    list_ucb_multipler=list_ucb_multipler,
+    list_lmd=list_lmd,
+    algorithms=["LinUCB", "Box A", "Box B"],
+    seeds=list_seed_simulation,
+    df_summary=df_summary,
+    sampling=0.1,
+    include_ci=True,
+    path_save=f"{PATH_PICS}/optimal_regret_curve_by_strategy.pdf",
 )
 
 fig, ax, df_selected = plot_best_regret_curves(

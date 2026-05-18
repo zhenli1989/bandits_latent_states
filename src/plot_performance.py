@@ -88,6 +88,196 @@ def _build_c_style_maps(c_values, cmap_name="Blues"):
     marker_map = {c: marker_cycle[i % len(marker_cycle)] for i, c in enumerate(c_values)}
     return color_map, marker_map
 
+def plot_optimal_regret_curve_by_strategy(path_models=".",
+                                          df_summary=None,
+                                          path_df_summary=None,
+                                          seeds=None,
+                                          number_rounds=50000,
+                                          list_ucb_multipler=None,
+                                          list_lmd=None,
+                                          list_batch=None,
+                                          algorithms=None,
+                                          with_union_bound=False,
+                                          sampling=None,
+                                          include_ci=True,
+                                          criterion_round=None,
+                                          path_save=None,
+                                          ax=None,
+                                          maximum_y_value=400,
+                                          line_width=1.25,
+                                          use_parallel=True,
+                                          n_jobs=-1,
+                                          parallel_backend="loky"):
+    """
+    Plot one optimal regret curve per strategy.
+
+    Selection rule:
+    - LinUCB: best terminal average_belief_regret over (C, lambda)
+    - Box A:  best terminal average_belief_regret over (batch_size, C, lambda)
+    - Box B:  best terminal average_belief_regret over (batch_size, C, lambda)
+
+    Output:
+    - one curve per strategy
+    - average belief regret
+    - optional +/- 2 SE band
+    """
+
+    if algorithms is None:
+        algorithms = ["LinUCB", "Box A", "Box B"]
+
+    if criterion_round is None:
+        criterion_round = number_rounds
+
+    if df_summary is None:
+        if path_df_summary is not None:
+            df_summary = pd.read_csv(path_df_summary)
+        else:
+            df_summary = export_summary_table(
+                path_models=path_models,
+                seeds=seeds,
+                number_rounds=number_rounds,
+                list_ucb_multipler=list_ucb_multipler,
+                list_lmd=list_lmd,
+                list_batch=list_batch,
+                algorithms=algorithms,
+                with_union_bound=with_union_bound,
+                path_save=None,
+                use_parallel=use_parallel,
+                n_jobs=n_jobs,
+                parallel_backend=parallel_backend,
+            )
+
+    df_summary = df_summary.copy()
+
+    display_name_map = {
+        "LinUCB": "Plain LinUCB",
+        "Box A": "Staged LinUCB on Estimated Beliefs",
+        "Box B": "LinUCB on Estimated Beliefs (without stages)",
+    }
+
+    color_map = {
+        "LinUCB": "#8c2d04",
+        "Box A": "steelblue",
+        "Box B": "darkgreen",
+    }
+
+    marker_map = {
+        "LinUCB": "o",
+        "Box A": "D",
+        "Box B": "v",
+    }
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5.5))
+    else:
+        fig = ax.figure
+
+    df_terminal = df_summary[df_summary["round"] == criterion_round].copy()
+
+    list_selected_rows = []
+    plotted_lower = []
+    plotted_upper = []
+
+    for algo in algorithms:
+        df_algo_terminal = df_terminal[df_terminal["algorithm"] == algo].copy()
+        if len(df_algo_terminal) == 0:
+            continue
+
+        idx_best = df_algo_terminal["average_belief_regret"].idxmin()
+        row_best = df_algo_terminal.loc[idx_best]
+        list_selected_rows.append(row_best)
+
+        batch_size = row_best["batch_size"]
+        c_value = row_best["C"]
+        lmd_value = row_best["lambda"]
+
+        df_curve = df_summary.loc[
+            (df_summary["algorithm"] == algo)
+            & (df_summary["batch_size"] == batch_size)
+            & (df_summary["C"] == c_value)
+            & (df_summary["lambda"] == lmd_value)
+        ].copy().sort_values("round")
+
+        T_range_ = df_curve["round"].to_numpy()
+        y_ = df_curve["average_belief_regret"].to_numpy()
+
+        if include_ci:
+            se_ = df_curve["se_belief_regret"].to_numpy()
+            lower_ = y_ - 2 * se_
+            upper_ = y_ + 2 * se_
+
+        if sampling is not None:
+            if isinstance(sampling, int):
+                index_choose = np.arange(0, len(T_range_), sampling)
+            elif isinstance(sampling, float):
+                if (sampling <= 0) or (sampling > 1):
+                    raise ValueError("If sampling is a float, it must be in (0,1].")
+                n_keep = max(2, int(np.ceil(len(T_range_) * sampling)))
+                index_choose = np.unique(np.linspace(0, len(T_range_) - 1, n_keep, dtype=int))
+            else:
+                raise ValueError("sampling must be None, int, or float.")
+
+            T_range_ = T_range_[index_choose]
+            y_ = y_[index_choose]
+            if include_ci:
+                lower_ = lower_[index_choose]
+                upper_ = upper_[index_choose]
+
+        if algo == "Box A":
+            label = f"{display_name_map[algo]} ($\\ell$={int(batch_size)})"
+        else:
+            label = display_name_map.get(algo, algo)
+
+        ax.plot(
+            T_range_,
+            y_,
+            label=label,
+            color=color_map.get(algo, None),
+            marker=marker_map.get(algo, None),
+            linewidth=line_width,
+            markersize=5,
+            markevery=max(1, len(T_range_) // 15),
+        )
+
+        if include_ci:
+            ax.fill_between(
+                T_range_,
+                lower_,
+                upper_,
+                color=color_map.get(algo, None),
+                alpha=0.18,
+            )
+            plotted_lower.append(lower_)
+            plotted_upper.append(upper_)
+        else:
+            plotted_lower.append(y_)
+            plotted_upper.append(y_)
+
+    if len(plotted_lower) > 0:
+        lower_all = np.concatenate(plotted_lower)
+        upper_all = np.concatenate(plotted_upper)
+
+        y_min = float(np.nanmin(lower_all))
+        y_max = float(np.nanmax(upper_all))
+        margin = 0.05 * (y_max - y_min) if y_max > y_min else 1.0
+
+        ax.set_xlim(int(df_summary["round"].min()), int(df_summary["round"].max()))
+        y_upper = y_max + margin
+        if maximum_y_value is not None:
+            y_upper = min(y_upper, maximum_y_value)
+        ax.set_ylim(max(0, y_min - margin), y_upper)
+
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper left", fontsize=9, ncol=1, frameon=True)
+
+    fig.tight_layout()
+
+    if path_save is not None:
+        fig.savefig(path_save, dpi=300, bbox_inches="tight")
+
+    df_selected = pd.DataFrame(list_selected_rows).reset_index(drop=True)
+
+    return fig, ax, df_selected
 
 def plot_best_regret_curves(number_rounds,
                             list_ucb_multipler,
